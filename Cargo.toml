@@ -1,0 +1,9 @@
+[package]
+name = "async-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures = "0.3.31"
+loom = { version = "0.7.2", features = ["futures"] }
+tokio = { version = "1.41.0", features = ["full"] }
