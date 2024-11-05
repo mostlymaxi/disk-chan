@@ -1,4 +1,5 @@
 use std::{
+    cell::{Cell, UnsafeCell},
     future::poll_fn,
     sync::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
@@ -13,25 +14,27 @@ use tokio::time::sleep;
 
 struct Chan {
     count: AtomicUsize,
+    count_strong: AtomicUsize,
     rx_count: AtomicUsize,
-    data: RwLock<Vec<u8>>,
 
-    // if lock_state = 0 => noone is writing
-    // if lock_state = 1 => someone is writing
-    // if lock_state = 2 => reseting
     waiting: AtomicU8,
+    waiting_strong: AtomicU8,
+    woken: AtomicU8,
     wakers: [AtomicWaker; u8::MAX as usize],
-    // AtomicVecDeque
-    // waker_linked_list
+
+    data: UnsafeCell<[u8; 8192]>,
 }
 
 fn new() -> (Producer, Consumer) {
     let chan = Chan {
         count: AtomicUsize::new(0),
+        count_strong: AtomicUsize::new(0),
         rx_count: AtomicUsize::new(0),
-        data: RwLock::new(Vec::new()),
         waiting: AtomicU8::new(0),
+        waiting_strong: AtomicU8::new(0),
+        woken: AtomicU8::new(0),
         wakers: [const { AtomicWaker::new() }; u8::MAX as usize],
+        data: UnsafeCell::new([0; 8192]),
     };
 
     let chan = Arc::new(chan);
@@ -52,6 +55,7 @@ impl Chan {
         if rx_count >= total_count {
             let line = self.waiting.fetch_add(1, Ordering::Relaxed);
             self.wakers[line as usize].register(cx.waker());
+            self.waiting_strong.fetch_add(1, Ordering::Release);
 
             let total_count = self.count.load(Ordering::Acquire);
 
@@ -67,16 +71,32 @@ impl Chan {
     }
 
     fn send(&self, val: u8) {
-        let _ = self.count.fetch_add(1, Ordering::Release);
-        // THIS IS A LOCK
-        // but i also know how to not make it lock
-        let mut data = self.data.write().expect("to not fail");
-        data.push(val);
+        let idx = self.count.fetch_add(1, Ordering::Release);
 
-        // this is the part i dont know how
-        // to not make lock
-        let idx = self.waiting.fetch_min(0, Ordering::Relaxed);
-        self.wakers[0..idx as usize].iter().for_each(|w| w.wake());
+        // SAFETY: trust me bro
+        unsafe {
+            let data = &mut *self.data.get();
+            data[idx] = val;
+        }
+
+        let idx = self.waiting_strong.load(Ordering::Acquire);
+        let start_idx = self.woken.swap(val, Ordering::Relaxed);
+
+        match start_idx.cmp(&idx) {
+            std::cmp::Ordering::Less => self.wakers[start_idx as usize..idx as usize]
+                .iter()
+                .for_each(|w| w.wake()),
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => {
+                self.wakers[start_idx as usize..]
+                    .iter()
+                    .for_each(|w| w.wake());
+
+                self.wakers[..idx as usize].iter().for_each(|w| w.wake());
+            }
+        }
+
+        self.count_strong.fetch_add(1, Ordering::Release);
     }
 }
 
