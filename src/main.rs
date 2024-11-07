@@ -25,6 +25,74 @@ struct Chan {
     data: UnsafeCell<[u8; 8192]>,
 }
 
+struct WaitingGroups<const G: usize, const N: usize> {
+    group_count_weak: AtomicUsize,
+    group_count: AtomicUsize,
+    groups: [Arc<WaitingGroup<N>>; G],
+}
+
+impl<const G: usize, const N: usize> WaitingGroups<G, N> {
+    pub fn wake_groups(&self) {
+        let group_count = self.group_count.load(Ordering::Acquire);
+        self.groups[..group_count].iter().for_each(|g| g.wake_one());
+    }
+}
+
+struct WaitingGroup<const N: usize> {
+    wake_count: AtomicUsize,
+    waiting_count_weak: AtomicUsize,
+    waiting_count: AtomicUsize,
+    current_waker: AtomicWaker,
+    wakers: [AtomicWaker; N],
+}
+
+impl<const N: usize> WaitingGroup<N> {
+    pub fn enqueue(&self, cx: Context<'_>) {
+        // WARN: we're waking a big assumption that we will never
+        // have more than N waiters per group
+        let idx = self.waiting_count_weak.fetch_add(1, Ordering::Relaxed);
+        self.wakers[idx % N].register(cx.waker());
+        self.waiting_count.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn wake_one(&self) {
+        let wake_count = self.wake_count.fetch_add(1, Ordering::Relaxed);
+        let waiting_count = self.waiting_count.load(Ordering::Acquire);
+
+        // no new waiters
+        if wake_count == waiting_count {
+            self.wake_count.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
+
+        self.wakers[wake_count as usize].wake();
+    }
+
+    pub fn wake_all(&self) {
+        let waiting_count = self.waiting_count.load(Ordering::Acquire);
+        let wake_count = self.wake_count.swap(waiting_count, Ordering::Relaxed);
+
+        let waiting_count = waiting_count % N;
+        let wake_count = wake_count % N;
+
+        match wake_count.cmp(&waiting_count) {
+            std::cmp::Ordering::Less => self.wakers[wake_count as usize..waiting_count as usize]
+                .iter()
+                .for_each(|w| w.wake()),
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Greater => {
+                self.wakers[waiting_count as usize..]
+                    .iter()
+                    .for_each(|w| w.wake());
+
+                self.wakers[..wake_count as usize]
+                    .iter()
+                    .for_each(|w| w.wake());
+            }
+        }
+    }
+}
+
 fn new() -> (Producer, Consumer) {
     let chan = Chan {
         count: AtomicUsize::new(0),
