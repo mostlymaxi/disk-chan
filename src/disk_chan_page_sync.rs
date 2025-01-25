@@ -1,14 +1,12 @@
 use std::{
     cell::UnsafeCell,
+    fs::File,
     marker::PhantomData,
     path::Path,
-    sync::atomic::{AtomicU32, AtomicU8, Ordering},
-    task::{Context, Poll},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
-use futures::{future::poll_fn, task::AtomicWaker};
 use memmap2::MmapMut;
-use tokio::fs::File;
 
 use crate::atomic_union::AtomicUnion;
 
@@ -16,20 +14,14 @@ const MAX_WAITING_GROUPS: usize = 16;
 const MAX_MAP_IDX_SLOTS: usize = u16::MAX as usize;
 const SALT: u32 = 1;
 
+#[repr(transparent)]
 struct MapIdxSlot {
-    waiting_count: AtomicU8,
     idx_with_salt: AtomicU32,
-    waiters: [AtomicWaker; MAX_WAITING_GROUPS],
 }
 
 impl MapIdxSlot {
     fn wake_all(&self) {
-        let waiting_count = self.waiting_count.swap(0, Ordering::Relaxed);
-        if waiting_count > 0 {
-            self.waiters[..waiting_count as usize]
-                .iter()
-                .for_each(|w| w.wake());
-        }
+        atomic_wait::wake_all(&self.idx_with_salt);
     }
 }
 
@@ -77,7 +69,7 @@ impl ChanPage {
         }
     }
 
-    pub async unsafe fn new<P: AsRef<Path>>(path: P, len: usize) -> Result<Self, std::io::Error> {
+    pub unsafe fn new<P: AsRef<Path>>(path: P, len: usize) -> Result<Self, std::io::Error> {
         let size = size_of::<ChanPagePersist<[u8; 0]>>();
         let size = len + size;
 
@@ -85,10 +77,9 @@ impl ChanPage {
             .create(true)
             .read(true)
             .write(true)
-            .open(path.as_ref())
-            .await?;
+            .open(path.as_ref())?;
 
-        f.set_len(size as u64).await?;
+        f.set_len(size as u64)?;
 
         let raw = unsafe { memmap2::MmapMut::map_mut(&f)? };
         let raw = UnsafeCell::new(raw);
@@ -137,7 +128,7 @@ impl ChanPage {
         Ok(())
     }
 
-    pub async fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
+    pub fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
         let page = unsafe { self.get_inner_mut() };
         let (count, _) = page.read_count_groups[group].fetch_add_low(1, Ordering::Relaxed);
 
@@ -146,38 +137,29 @@ impl ChanPage {
             return Err(ChanPageError::PageFull);
         }
 
-        let data = poll_fn(|cx| self.get_poll(cx, count)).await;
+        let data = self.get(count);
 
         let _ = page.read_count_groups[group].fetch_add_high(1, Ordering::Relaxed);
         data
     }
 
-    fn get_poll(&self, cx: &mut Context<'_>, count: u32) -> Poll<Result<&[u8], ChanPageError>> {
+    fn get(&self, count: u32) -> Result<&[u8], ChanPageError> {
         let page = unsafe { self.get_inner() };
 
-        let idx = page.map[count as usize]
-            .idx_with_salt
-            .load(Ordering::Acquire);
+        let idx = loop {
+            let idx = page.map[count as usize]
+                .idx_with_salt
+                .load(Ordering::Acquire);
 
-        let idx = match idx {
-            _ if idx < SALT => {
-                let wait_idx = page.map[count as usize]
-                    .waiting_count
-                    .fetch_add(1, Ordering::Relaxed);
-
-                page.map[count as usize].waiters[wait_idx as usize].register(cx.waker());
-
-                // second check to make sure that a writer didn't finish while we were registering
-                let idx = page.map[count as usize]
-                    .idx_with_salt
-                    .load(Ordering::Acquire);
-
-                match idx {
-                    _ if idx < SALT => return Poll::Pending,
-                    idx => idx - SALT,
+            let idx = match idx {
+                _ if idx < SALT => {
+                    atomic_wait::wait(&page.map[count as usize].idx_with_salt, 0);
+                    continue;
                 }
-            }
-            idx => idx - SALT,
+                idx => idx - SALT,
+            };
+
+            break idx;
         };
 
         if idx >= self.len() as u32 {
@@ -187,13 +169,13 @@ impl ChanPage {
                     .store(u32::MAX, Ordering::Release);
                 page.map[count as usize + 1].wake_all();
             }
-            return Poll::Ready(Err(ChanPageError::PageFull));
+            return Err(ChanPageError::PageFull);
         }
 
         let idx_offset = idx as usize + size_of::<u32>();
 
         let data_len = u32::from_le_bytes(page.data[idx as usize..idx_offset].try_into().unwrap());
 
-        Poll::Ready(Ok(&page.data[idx_offset..idx_offset + data_len as usize]))
+        Ok(&page.data[idx_offset..idx_offset + data_len as usize])
     }
 }
