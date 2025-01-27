@@ -2,6 +2,16 @@
 name = "disk-chan"
 version = "0.1.0"
 edition = "2021"
+authors = ["Maxi Saparov <maxi.saparov@gmail.com>"]
+description = "An on-disk, (almost) lock-free, async, mpmc channel."
+documentation = "https://docs.rs/disk-chan"
+homepage = "https://github.com/MostlyMaxi/disk-chan"
+repository = "https://github.com/MostlyMaxi/disk-chan"
+readme = "README.md"
+keywords = ["ringbuffer", "queue"]
+license = "MIT"
+categories = ["database-implementations", "data-structures"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 atomic-wait = "1.1.0"
