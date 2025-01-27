@@ -1,10 +1,15 @@
 [package]
-name = "async-rust"
+name = "disk-chan"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+atomic-wait = "1.1.0"
+base62 = "2.2.1"
 futures = "0.3.31"
-loom = { version = "0.7.2", features = ["futures"] }
 memmap2 = "0.9.5"
 tokio = { version = "1.41.0", features = ["full"] }
+
+[dev-dependencies]
+const-str = "0.6.0"
+
