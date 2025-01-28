@@ -12,7 +12,9 @@ async fn mpmc() {
 
     tracing_subscriber::fmt::init();
 
-    let tx = new("test", 2_usize.pow(24), 16).await.unwrap();
+    let tx = new("/tmp/disk-chan-test/mpmc", 2_usize.pow(24), 16)
+        .await
+        .unwrap();
     let rx = tx.subscribe(0).await.unwrap();
 
     let barrier = Arc::new(Barrier::new(NUM_THREADS * 2 + 1));
@@ -62,5 +64,5 @@ async fn mpmc() {
     }
 
     eprintln!("{:#?}", now.elapsed());
-    // let _ = std::fs::remove_dir_all("test");
+    let _ = std::fs::remove_dir_all("/tmp/disk-chan-test/mpmc");
 }

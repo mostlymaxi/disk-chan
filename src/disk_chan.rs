@@ -79,7 +79,6 @@ impl DiskChan {
         i.try_into().ok()
     }
 
-    #[instrument(skip_all)]
     async fn load_pages_from_path<P: AsRef<Path>>(path: P) -> (usize, VecDeque<Arc<ChanPage>>) {
         let mut pages_unordered = Vec::new();
 
