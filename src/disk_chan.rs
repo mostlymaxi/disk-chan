@@ -22,17 +22,29 @@ pub struct DiskChan {
     pages: RwLock<VecDeque<Arc<ChanPage>>>,
 }
 
-impl DiskChan {
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        page_size: usize,
-        max_pages: usize,
-    ) -> Result<Self, std::io::Error> {
-        let _ = std::fs::create_dir_all(path.as_ref());
+impl std::fmt::Debug for DiskChan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskChan")
+            .field("path", &self.path)
+            .field("count", &self.count)
+            .field("max_pages", &self.max_pages)
+            .field("page_size", &self.page_size)
+            .finish_non_exhaustive()
+    }
+}
 
+impl Drop for DiskChan {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.path.join(".pid.lock"));
+    }
+}
+
+impl DiskChan {
+    fn get_lock<P: AsRef<Path>>(path: P) -> Result<File, std::io::Error> {
         let mut lock = match std::fs::OpenOptions::new()
             .create_new(true)
             .read(true)
+            .truncate(true)
             .write(true)
             .open(path.as_ref().join(".pid.lock"))
         {
@@ -45,8 +57,89 @@ impl DiskChan {
 
         lock.write_all(std::process::id().to_string().as_bytes())?;
 
-        // TODO: load pages
-        let pages = RwLock::new(VecDeque::new());
+        Ok(lock)
+    }
+
+    fn parse_page_no(name: String) -> Option<usize> {
+        let mut name_itr = name.split('.');
+
+        if name_itr.next()? != "data" {
+            return None;
+        }
+        let Some(i) = name_itr.next().and_then(|s| base62::decode(s).ok()) else {
+            return None;
+        };
+        if name_itr.next()? != "bin" {
+            return None;
+        }
+        if name_itr.next().is_some() {
+            return None;
+        }
+
+        i.try_into().ok()
+    }
+
+    async fn load_pages_from_path<P: AsRef<Path>>(path: P) -> (usize, VecDeque<Arc<ChanPage>>) {
+        let mut pages_unordered = Vec::new();
+
+        for entry in std::fs::read_dir(path).expect("path exists") {
+            let Ok(entry) = entry else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = entry.path();
+            let Some(page_no) = Self::parse_page_no(name) else {
+                continue;
+            };
+            let Ok(mut page) = (unsafe { ChanPage::new(path, meta.len() as usize).await }) else {
+                continue;
+            };
+
+            unsafe {
+                page.reset_all_waiters();
+            }
+
+            pages_unordered.push((page_no, Arc::new(page)));
+        }
+
+        pages_unordered.sort_by(|a, b| a.0.cmp(&b.0));
+        let count = pages_unordered.last().map(|(c, _)| *c).unwrap_or(0);
+        let pages = pages_unordered.into_iter().map(|(_, page)| page).collect();
+        (count, pages)
+    }
+
+    pub async fn new<P: AsRef<Path>>(
+        path: P,
+        page_size: usize,
+        max_pages: usize,
+    ) -> Result<Self, std::io::Error> {
+        let _ = std::fs::create_dir_all(path.as_ref());
+        let lock = Self::get_lock(path.as_ref())?;
+
+        let (count, mut pages) = Self::load_pages_from_path(&path).await;
+
+        // if i load pages 3, 4, 5, 6 w/ max_pages = 2
+        // pages.len() = 4
+        if pages.len() > max_pages {
+            // logic here is rough but i'm pretty sure it's correct
+            // off by one errors all over the place ugh
+            //                                3 ..= 4
+            //          6   - (    4       - 1 )      6   -     2
+            for i in (count - (pages.len() - 1))..=(count - max_pages) {
+                let _ = pages.pop_front();
+                let num: u64 = i.try_into().expect("to be optimized out");
+                if let Err(e) = std::fs::remove_file(
+                    path.as_ref()
+                        .join(format!("data.{}.bin", base62::encode_fmt(num))),
+                ) {
+                    eprintln!("something went wrong with page cleanup... channel may be corrupted");
+                    return Err(e);
+                }
+            }
+        }
+
+        let pages = RwLock::new(pages);
 
         Ok(DiskChan {
             path: path.as_ref().into(),

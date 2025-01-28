@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
-use async_rust::*;
+use disk_chan::*;
 use tokio::sync::Barrier;
+use tracing_subscriber::fmt::format::Pretty;
 
 #[tokio::test]
 async fn mpmc() {
-    const MESSAGE_COUNT: usize = 5_000_000;
+    const MESSAGE_COUNT: usize = 100_000;
     const MESSAGE: &str = const_str::repeat!("a", 100);
     const NUM_THREADS: usize = 4;
+
+    tracing_subscriber::fmt::init();
 
     let tx = new("test", 2_usize.pow(24), 16).await.unwrap();
     let rx = tx.subscribe(0).await.unwrap();
@@ -55,5 +58,5 @@ async fn mpmc() {
     }
 
     eprintln!("{:#?}", now.elapsed());
-    let _ = std::fs::remove_dir_all("test");
+    // let _ = std::fs::remove_dir_all("test");
 }

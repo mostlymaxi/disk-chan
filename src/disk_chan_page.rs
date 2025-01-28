@@ -54,6 +54,13 @@ pub enum ChanPageError {
 }
 
 impl ChanPage {
+    pub(crate) unsafe fn reset_all_waiters(&mut self) {
+        for slot in &mut self.get_inner_mut().map {
+            slot.waiting_count.store(0, Ordering::SeqCst);
+            slot.waiters.fill_with(Default::default);
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         unsafe { (&*self.inner.get()).len() - size_of::<ChanPagePersist<[u8; 0]>>() }
