@@ -7,7 +7,7 @@ async fn seq() {
 
     tracing_subscriber::fmt::init();
 
-    let mut tx = new("/tmp/disk-chan-test/seq", 2_usize.pow(24), 16)
+    let mut tx = new("/tmp/disk-chan-test/seq", 2_usize.pow(24), usize::MAX)
         .await
         .unwrap();
     let mut rx = tx.subscribe(0).await.unwrap();
