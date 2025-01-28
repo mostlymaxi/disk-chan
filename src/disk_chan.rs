@@ -79,6 +79,7 @@ impl DiskChan {
         i.try_into().ok()
     }
 
+    #[instrument(skip_all)]
     async fn load_pages_from_path<P: AsRef<Path>>(path: P) -> (usize, VecDeque<Arc<ChanPage>>) {
         let mut pages_unordered = Vec::new();
 
@@ -98,14 +99,16 @@ impl DiskChan {
 
             unsafe {
                 page.reset_all_waiters();
+                page.reset_read_count_groups();
             }
 
             pages_unordered.push((page_no, Arc::new(page)));
         }
 
         pages_unordered.sort_by(|a, b| a.0.cmp(&b.0));
-        let count = pages_unordered.last().map(|(c, _)| *c).unwrap_or(0);
+        let count = pages_unordered.last().map(|(c, _)| *c + 1).unwrap_or(0);
         let pages = pages_unordered.into_iter().map(|(_, page)| page).collect();
+
         (count, pages)
     }
 
@@ -144,7 +147,7 @@ impl DiskChan {
         Ok(DiskChan {
             path: path.as_ref().into(),
             _lock: lock,
-            count: AtomicUsize::new(0),
+            count: AtomicUsize::new(count),
             max_pages,
             page_size,
             pages,
@@ -182,6 +185,7 @@ impl DiskChan {
                 let new_page = Arc::new(new_page);
 
                 pages.push_back(new_page.clone());
+                pages.make_contiguous();
 
                 return Ok((count, new_page));
             }
@@ -199,6 +203,9 @@ impl DiskChan {
 
         let page_no = min_page.max(page_no);
 
-        Ok((page_no, pages[page_no - min_page].clone()))
+        // make_contiguous ensures that all pages are in the first slice, in order
+        let (pages_slice, _) = pages.as_slices();
+
+        Ok((page_no, pages_slice[page_no - min_page].clone()))
     }
 }

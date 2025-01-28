@@ -41,9 +41,27 @@ struct ChanPagePersist<Data: ?Sized = [u8]> {
     data: Data,
 }
 
+impl std::fmt::Debug for ChanPagePersist {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChanPagePersist")
+            .field("write_idx_count", &self.write_idx_count)
+            .field("read_count_groups", &&self.read_count_groups[0..2])
+            .finish_non_exhaustive()
+    }
+}
+
+#[repr(transparent)]
 pub struct ChanPage {
     inner: UnsafeCell<MmapMut>,
     _phantom: PhantomData<ChanPagePersist>,
+}
+
+impl std::fmt::Debug for ChanPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChanPage")
+            .field("inner", unsafe { &self.get_inner() })
+            .finish()
+    }
 }
 
 unsafe impl Send for ChanPage {}
@@ -58,6 +76,13 @@ impl ChanPage {
         for slot in &mut self.get_inner_mut().map {
             slot.waiting_count.store(0, Ordering::SeqCst);
             slot.waiters.fill_with(Default::default);
+        }
+    }
+
+    pub(crate) unsafe fn reset_read_count_groups(&mut self) {
+        for group in &mut self.get_inner_mut().read_count_groups {
+            let strong_read_count = group.load_high(Ordering::SeqCst);
+            group.store_low(strong_read_count, Ordering::SeqCst);
         }
     }
 
@@ -115,6 +140,11 @@ impl ChanPage {
             Ordering::Relaxed,
         );
 
+        //trace! {
+        //    %count,
+        //    %idx
+        //}
+
         if count >= MAX_MAP_IDX_SLOTS as u32 {
             return Err(ChanPageError::PageFull);
         }
@@ -148,8 +178,10 @@ impl ChanPage {
         let page = unsafe { self.get_inner_mut() };
         let (count, _) = page.read_count_groups[group].fetch_add_low(1, Ordering::Relaxed);
 
+        // trace!("{}", count);
+
         if count >= MAX_MAP_IDX_SLOTS as u32 {
-            let _ = page.read_count_groups[group].fetch_add_high(1, Ordering::Relaxed);
+            // let _ = page.read_count_groups[group].fetch_sub_low(1, Ordering::Relaxed);
             return Err(ChanPageError::PageFull);
         }
 

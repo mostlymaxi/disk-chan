@@ -8,6 +8,15 @@ pub union AtomicUnion {
     _low: ManuallyDrop<AtomicU32>,
 }
 
+impl std::fmt::Debug for AtomicUnion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AtomicUnion")
+            .field(&self.load_high(Ordering::SeqCst))
+            .field(&self.load_low(Ordering::SeqCst))
+            .finish()
+    }
+}
+
 impl AtomicUnion {
     #[allow(dead_code)]
     pub fn fetch_add_high(&self, val: u32, ord: Ordering) -> (u32, u32) {
@@ -40,6 +49,11 @@ impl AtomicUnion {
     #[allow(dead_code)]
     pub fn load_low(&self, ord: Ordering) -> u32 {
         unsafe { self._low.load(ord) }
+    }
+
+    #[allow(dead_code)]
+    pub fn store_low(&self, val: u32, ord: Ordering) {
+        unsafe { self._low.store(val, ord) }
     }
 
     #[allow(dead_code)]
