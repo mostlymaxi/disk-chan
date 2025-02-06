@@ -51,7 +51,7 @@ impl std::fmt::Debug for ChanPagePersist {
 }
 
 #[repr(transparent)]
-pub struct ChanPage {
+pub(crate) struct ChanPage {
     inner: UnsafeCell<MmapMut>,
     _phantom: PhantomData<ChanPagePersist>,
 }
@@ -109,7 +109,11 @@ impl ChanPage {
         }
     }
 
-    pub async unsafe fn new<P: AsRef<Path>>(path: P, len: usize) -> Result<Self, std::io::Error> {
+    /// Safety: trust me
+    pub(crate) async unsafe fn new<P: AsRef<Path>>(
+        path: P,
+        len: usize,
+    ) -> Result<Self, std::io::Error> {
         let size = size_of::<ChanPagePersist<[u8; 0]>>();
         let size = len + size;
 
@@ -131,7 +135,7 @@ impl ChanPage {
         })
     }
 
-    pub fn push<V: AsRef<[u8]>>(&self, val: V) -> Result<(), ChanPageError> {
+    pub(crate) fn push<V: AsRef<[u8]>>(&self, val: V) -> Result<(), ChanPageError> {
         let page = unsafe { self.get_inner_mut() };
 
         let (count, idx) = page.write_idx_count.fetch_add_high_low(
@@ -174,7 +178,7 @@ impl ChanPage {
         Ok(())
     }
 
-    pub async fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
+    pub(crate) async fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
         let page = unsafe { self.get_inner_mut() };
         let (count, _) = page.read_count_groups[group].fetch_add_low(1, Ordering::Relaxed);
 

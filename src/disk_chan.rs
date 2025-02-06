@@ -111,7 +111,7 @@ impl DiskChan {
         (count, pages)
     }
 
-    pub async fn new<P: AsRef<Path>>(
+    pub(crate) async fn new<P: AsRef<Path>>(
         path: P,
         page_size: usize,
         max_pages: usize,
