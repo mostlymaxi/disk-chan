@@ -10,6 +10,8 @@ several quirks - this library should only be used if it is truly necessary as ma
 should use other memory backed message queues such as [crossbeam](https://github.com/crossbeam-rs/crossbeam) and simply dump messages
 to disk when needed.
 
+See documentation on [docs.rs](https://docs.rs/disk-chan/latest/disk_chan/)
+
 ## Usage
 ```no_run
 #[tokio::main]
