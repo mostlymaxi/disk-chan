@@ -1,6 +1,6 @@
 [package]
 name = "disk-chan"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Maxi Saparov <maxi.saparov@gmail.com>"]
 description = "An on-disk, (almost) lock-free, async, mpmc channel."

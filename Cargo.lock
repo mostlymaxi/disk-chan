@@ -83,7 +83,7 @@ checksum = "671927c085eb5827d30b95df08f6c6a2301eafe2274c368bb2c16f42e03547eb"
 
 [[package]]
 name = "disk-chan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "atomic-wait",
  "base62",
