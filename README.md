@@ -20,7 +20,7 @@ async fn main() -> Result<(), std::io::Error> {
     const MESSAGE: &str = "test message";
     const NUM_THREADS: usize = 4;
 
-    let tx = disk_chan::new("/tmp/path-to-channel", 2_usize.pow(24), 16).await?;
+    let tx = disk_chan::new("/tmp/path-to-channel", 2_u32.pow(24), 16).await?;
     let rx = tx.subscribe(0).await?;
 
     let mut handles = Vec::new();

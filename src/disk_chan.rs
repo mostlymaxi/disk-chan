@@ -11,14 +11,14 @@ use std::{
 
 use tokio::sync::RwLock;
 
-use crate::ChanPage;
+use crate::{disk_chan_page, ChanPage, IdxUsize};
 
 pub struct DiskChan {
     path: PathBuf,
     _lock: File,
     count: AtomicUsize,
     max_pages: usize,
-    page_size: usize,
+    page_size: IdxUsize,
     pages: RwLock<VecDeque<Arc<ChanPage>>>,
 }
 
@@ -66,9 +66,9 @@ impl DiskChan {
         if name_itr.next()? != "data" {
             return None;
         }
-        let Some(i) = name_itr.next().and_then(|s| base62::decode(s).ok()) else {
-            return None;
-        };
+
+        let i = name_itr.next().and_then(|s| base62::decode(s).ok())?;
+
         if name_itr.next()? != "bin" {
             return None;
         }
@@ -92,7 +92,15 @@ impl DiskChan {
             let Some(page_no) = Self::parse_page_no(name) else {
                 continue;
             };
-            let Ok(mut page) = (unsafe { ChanPage::new(path, meta.len() as usize).await }) else {
+
+            let header_size: u32 = size_of::<disk_chan_page::ChanPagePersist<[u8; 0]>>()
+                .try_into()
+                .expect("to be optimized out");
+
+            let file_size: u32 = meta.len().try_into().expect("to be optimized out");
+
+            let Ok(mut page) = (unsafe { ChanPage::new(path, file_size - header_size).await })
+            else {
                 continue;
             };
 
@@ -111,9 +119,9 @@ impl DiskChan {
         (count, pages)
     }
 
-    pub(crate) async fn new<P: AsRef<Path>>(
+    pub(super) async fn new<P: AsRef<Path>>(
         path: P,
-        page_size: usize,
+        page_size: u32,
         max_pages: usize,
     ) -> Result<Self, std::io::Error> {
         let _ = std::fs::create_dir_all(path.as_ref());

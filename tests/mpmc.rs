@@ -12,7 +12,7 @@ async fn mpmc() {
 
     tracing_subscriber::fmt::init();
 
-    let tx = new("/tmp/disk-chan-test/mpmc", 2_usize.pow(24), 16)
+    let tx = new("/tmp/disk-chan-test/mpmc", 2_u32.pow(24), 16)
         .await
         .unwrap();
     let rx = tx.subscribe(0).await.unwrap();

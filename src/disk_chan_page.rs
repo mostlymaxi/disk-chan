@@ -12,8 +12,12 @@ use tokio::fs::File;
 
 use crate::atomic_union::AtomicUnion;
 
+pub(super) type MapUsize = u16;
+pub(super) type IdxUsize = u32;
+pub(super) type CountUsize = u32;
+
 const MAX_WAITING_GROUPS: usize = 16;
-const MAX_MAP_IDX_SLOTS: usize = u16::MAX as usize;
+const MAX_MAP_IDX_SLOTS: usize = MapUsize::MAX as usize;
 const SALT: u32 = 1;
 
 struct MapIdxSlot {
@@ -34,7 +38,7 @@ impl MapIdxSlot {
 }
 
 #[repr(C)]
-struct ChanPagePersist<Data: ?Sized = [u8]> {
+pub(super) struct ChanPagePersist<Data: ?Sized = [u8]> {
     write_idx_count: AtomicUnion,
     read_count_groups: [AtomicUnion; MAX_WAITING_GROUPS],
     map: [MapIdxSlot; MAX_MAP_IDX_SLOTS],
@@ -72,14 +76,14 @@ pub enum ChanPageError {
 }
 
 impl ChanPage {
-    pub(crate) unsafe fn reset_all_waiters(&mut self) {
+    pub(super) unsafe fn reset_all_waiters(&mut self) {
         for slot in &mut self.get_inner_mut().map {
             slot.waiting_count.store(0, Ordering::SeqCst);
             slot.waiters.fill_with(Default::default);
         }
     }
 
-    pub(crate) unsafe fn reset_read_count_groups(&mut self) {
+    pub(super) unsafe fn reset_read_count_groups(&mut self) {
         for group in &mut self.get_inner_mut().read_count_groups {
             let strong_read_count = group.load_high(Ordering::SeqCst);
             group.store_low(strong_read_count, Ordering::SeqCst);
@@ -88,43 +92,45 @@ impl ChanPage {
 
     #[inline]
     pub fn len(&self) -> usize {
-        unsafe { (&*self.inner.get()).len() - size_of::<ChanPagePersist<[u8; 0]>>() }
+        unsafe { (*self.inner.get()).len() - size_of::<ChanPagePersist<[u8; 0]>>() }
     }
 
     #[inline]
-    unsafe fn get_inner<'a>(&'a self) -> &'a ChanPagePersist {
+    unsafe fn get_inner(&self) -> &ChanPagePersist {
         unsafe {
-            &*(std::ptr::slice_from_raw_parts((&*self.inner.get()).as_ptr(), self.len())
+            &*(std::ptr::slice_from_raw_parts((*self.inner.get()).as_ptr(), self.len())
                 as *const ChanPagePersist)
         }
     }
 
     #[inline]
-    unsafe fn get_inner_mut<'a>(&'a self) -> &'a mut ChanPagePersist {
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_inner_mut(&self) -> &mut ChanPagePersist {
         unsafe {
-            &mut *(std::ptr::slice_from_raw_parts_mut(
-                (&mut *self.inner.get()).as_mut_ptr(),
-                self.len(),
-            ) as *mut ChanPagePersist)
+            &mut *(std::ptr::slice_from_raw_parts_mut((*self.inner.get()).as_mut_ptr(), self.len())
+                as *mut ChanPagePersist)
         }
     }
 
     /// Safety: trust me
-    pub(crate) async unsafe fn new<P: AsRef<Path>>(
+    pub(super) async unsafe fn new<P: AsRef<Path>>(
         path: P,
-        len: usize,
+        len: IdxUsize,
     ) -> Result<Self, std::io::Error> {
-        let size = size_of::<ChanPagePersist<[u8; 0]>>();
-        let size = len + size;
+        let size: u64 = size_of::<ChanPagePersist<[u8; 0]>>()
+            .try_into()
+            .expect("to be optimized out");
+        let size: u64 = len as u64 + size;
 
         let f = File::options()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path.as_ref())
             .await?;
 
-        f.set_len(size as u64).await?;
+        f.set_len(size).await?;
 
         let raw = unsafe { memmap2::MmapMut::map_mut(&f)? };
         let raw = UnsafeCell::new(raw);
@@ -135,7 +141,7 @@ impl ChanPage {
         })
     }
 
-    pub(crate) fn push<V: AsRef<[u8]>>(&self, val: V) -> Result<(), ChanPageError> {
+    pub(super) fn push<V: AsRef<[u8]>>(&self, val: V) -> Result<(), ChanPageError> {
         let page = unsafe { self.get_inner_mut() };
 
         let (count, idx) = page.write_idx_count.fetch_add_high_low(
@@ -178,14 +184,13 @@ impl ChanPage {
         Ok(())
     }
 
-    pub(crate) async fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
+    pub(super) async fn pop(&self, group: usize) -> Result<&[u8], ChanPageError> {
+        debug_assert!(group < MAX_WAITING_GROUPS);
+
         let page = unsafe { self.get_inner_mut() };
         let (count, _) = page.read_count_groups[group].fetch_add_low(1, Ordering::Relaxed);
 
-        // trace!("{}", count);
-
         if count >= MAX_MAP_IDX_SLOTS as u32 {
-            // let _ = page.read_count_groups[group].fetch_sub_low(1, Ordering::Relaxed);
             return Err(ChanPageError::PageFull);
         }
 
@@ -195,7 +200,11 @@ impl ChanPage {
         data
     }
 
-    fn get_poll(&self, cx: &mut Context<'_>, count: u32) -> Poll<Result<&[u8], ChanPageError>> {
+    fn get_poll(
+        &self,
+        cx: &mut Context<'_>,
+        count: CountUsize,
+    ) -> Poll<Result<&[u8], ChanPageError>> {
         let page = unsafe { self.get_inner() };
 
         let idx = page.map[count as usize]

@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc};
 mod atomic_union;
 
 mod disk_chan_page;
-use disk_chan_page::*;
+use disk_chan_page::{ChanPage, IdxUsize};
 
 mod disk_chan;
 use disk_chan::DiskChan;
@@ -17,7 +17,7 @@ use disk_chan::DiskChan;
 ///
 /// ```no_run
 /// # async fn consumer_example() -> Result<(), std::io::Error> {
-/// let mut tx = disk_chan::new("foo", 2_usize.pow(24), 1).await?;
+/// let mut tx = disk_chan::new("foo", 2_u32.pow(24), 1).await?;
 /// let mut rx = tx.subscribe(0).await?;
 /// let mut rx2 = rx.try_clone().await?;
 ///
@@ -74,7 +74,7 @@ impl Consumer {
     ///
     /// ```no_run
     /// # async fn consumer_example() -> Result<(), std::io::Error> {
-    /// let mut tx = disk_chan::new("foo", 2_usize.pow(24), 1).await?;
+    /// let mut tx = disk_chan::new("foo", 2_u32.pow(24), 1).await?;
     /// let mut rx = tx.subscribe(0).await?;
     /// let mut rx2 = rx.try_clone().await?;
     ///
@@ -100,7 +100,7 @@ impl Consumer {
     ///
     /// ```no_run
     /// # async fn consumer_example() -> Result<(), std::io::Error> {
-    /// let mut tx = disk_chan::new("foo", 2_usize.pow(24), 1).await?;
+    /// let mut tx = disk_chan::new("foo", 2_u32.pow(24), 1).await?;
     /// let mut rx = tx.subscribe(0).await?;
     /// let mut rx2 = rx.try_clone().await?;
     ///
@@ -132,7 +132,7 @@ impl Consumer {
 ///
 /// ```no_run
 /// # async fn producer_example() -> Result<(), std::io::Error> {
-/// let mut tx = disk_chan::new("foo", 2_usize.pow(24), 1).await?;
+/// let mut tx = disk_chan::new("foo", 2_u32.pow(24), 1).await?;
 ///
 /// tx.send("test").await?;
 /// # Ok(())
@@ -170,7 +170,7 @@ impl std::fmt::Debug for Producer {
 /// and adjust `max_pages` to tune the amount of data stored.
 pub async fn new<P: AsRef<Path>>(
     path: P,
-    page_size: usize,
+    page_size: IdxUsize,
     max_pages: usize,
 ) -> Result<Producer, std::io::Error> {
     let chan = DiskChan::new(path, page_size, max_pages).await?;
@@ -211,7 +211,7 @@ impl Producer {
     ///
     /// ```no_run
     /// # async fn producer_example() -> Result<(), std::io::Error> {
-    /// let mut tx = disk_chan::new("foo", 2_usize.pow(24), 1).await?;
+    /// let mut tx = disk_chan::new("foo", 2_u32.pow(24), 1).await?;
     ///
     /// tx.send("test").await?;
     /// # Ok(())
@@ -219,6 +219,7 @@ impl Producer {
     /// ```
     pub async fn send<V: AsRef<[u8]>>(&mut self, val: V) -> Result<(), std::io::Error> {
         loop {
+            #[allow(clippy::single_match)]
             match self.local.push(&val) {
                 Ok(()) => return Ok(()),
                 Err(_) => {}
