@@ -2,7 +2,7 @@ use std::{
     cell::UnsafeCell,
     marker::PhantomData,
     path::Path,
-    sync::atomic::{AtomicU32, AtomicU8, Ordering},
+    sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
     task::{Context, Poll},
 };
 
@@ -20,13 +20,28 @@ const MAX_WAITING_GROUPS: usize = 16;
 const MAX_MAP_IDX_SLOTS: usize = MapUsize::MAX as usize;
 const SALT: u32 = 1;
 
-struct MapIdxSlot {
+struct WakerQueue {
     waiting_count: AtomicU8,
-    idx_with_salt: AtomicU32,
-    waiters: [AtomicWaker; MAX_WAITING_GROUPS],
+    waiters: Box<[AtomicWaker]>,
 }
 
-impl MapIdxSlot {
+impl Clone for WakerQueue {
+    fn clone(&self) -> Self {
+        WakerQueue {
+            waiting_count: AtomicU8::new(0),
+            waiters: Box::new([const { AtomicWaker::new() }; MAX_WAITING_GROUPS]),
+        }
+    }
+}
+
+impl WakerQueue {
+    fn new() -> Self {
+        WakerQueue {
+            waiting_count: AtomicU8::new(0),
+            waiters: Box::new([const { AtomicWaker::new() }; MAX_WAITING_GROUPS]),
+        }
+    }
+
     fn wake_all(&self) {
         let waiting_count = self.waiting_count.swap(0, Ordering::Relaxed);
         if waiting_count > 0 {
@@ -37,11 +52,10 @@ impl MapIdxSlot {
     }
 }
 
-#[repr(C)]
 pub(super) struct ChanPagePersist<Data: ?Sized = [u8]> {
     write_idx_count: AtomicUnion,
     read_count_groups: [AtomicUnion; MAX_WAITING_GROUPS],
-    map: [MapIdxSlot; MAX_MAP_IDX_SLOTS],
+    map: [AtomicU32; MAX_MAP_IDX_SLOTS],
     data: Data,
 }
 
@@ -54,9 +68,9 @@ impl std::fmt::Debug for ChanPagePersist {
     }
 }
 
-#[repr(transparent)]
 pub(crate) struct ChanPage {
     inner: UnsafeCell<MmapMut>,
+    wakers: Box<[WakerQueue]>,
     _phantom: PhantomData<ChanPagePersist>,
 }
 
@@ -76,12 +90,12 @@ pub enum ChanPageError {
 }
 
 impl ChanPage {
-    pub(super) unsafe fn reset_all_waiters(&mut self) {
-        for slot in &mut self.get_inner_mut().map {
-            slot.waiting_count.store(0, Ordering::SeqCst);
-            slot.waiters.fill_with(Default::default);
-        }
-    }
+    //pub(super) unsafe fn reset_all_waiters(&mut self) {
+    //    for slot in self.get_inner_mut().map.iter_mut() {
+    //        slot.waiting_count.store(0, Ordering::SeqCst);
+    //        // slot.waiters.fill_with(AtomicWaker::new);
+    //    }
+    //}
 
     pub(super) unsafe fn reset_read_count_groups(&mut self) {
         for group in &mut self.get_inner_mut().read_count_groups {
@@ -137,6 +151,7 @@ impl ChanPage {
 
         Ok(ChanPage {
             inner: raw,
+            wakers: vec![WakerQueue::new(); MAX_MAP_IDX_SLOTS].into_boxed_slice(),
             _phantom: PhantomData,
         })
     }
@@ -160,11 +175,9 @@ impl ChanPage {
         }
 
         if idx + size_of::<u32>() as u32 + val.as_ref().len() as u32 >= self.len() as u32 {
-            page.map[count as usize]
-                .idx_with_salt
-                .store(u32::MAX, Ordering::Release);
+            page.map[count as usize].store(u32::MAX, Ordering::Release);
 
-            page.map[count as usize].wake_all();
+            self.wakers[count as usize].wake_all();
 
             return Err(ChanPageError::PageFull);
         }
@@ -175,11 +188,9 @@ impl ChanPage {
             .copy_from_slice(&(val.as_ref().len() as u32).to_le_bytes());
         page.data[idx_offset..idx_offset + val.as_ref().len()].copy_from_slice(val.as_ref());
 
-        page.map[count as usize]
-            .idx_with_salt
-            .store(idx + SALT, Ordering::Relaxed);
+        page.map[count as usize].store(idx + SALT, Ordering::Relaxed);
 
-        page.map[count as usize].wake_all();
+        self.wakers[count as usize].wake_all();
 
         Ok(())
     }
@@ -207,22 +218,18 @@ impl ChanPage {
     ) -> Poll<Result<&[u8], ChanPageError>> {
         let page = unsafe { self.get_inner() };
 
-        let idx = page.map[count as usize]
-            .idx_with_salt
-            .load(Ordering::Acquire);
+        let idx = page.map[count as usize].load(Ordering::Acquire);
 
         let idx = match idx {
             _ if idx < SALT => {
-                let wait_idx = page.map[count as usize]
+                let wait_idx = self.wakers[count as usize]
                     .waiting_count
                     .fetch_add(1, Ordering::Relaxed);
 
-                page.map[count as usize].waiters[wait_idx as usize].register(cx.waker());
+                self.wakers[count as usize].waiters[wait_idx as usize].register(cx.waker());
 
                 // second check to make sure that a writer didn't finish while we were registering
-                let idx = page.map[count as usize]
-                    .idx_with_salt
-                    .load(Ordering::Acquire);
+                let idx = page.map[count as usize].load(Ordering::Acquire);
 
                 match idx {
                     _ if idx < SALT => return Poll::Pending,
@@ -234,10 +241,8 @@ impl ChanPage {
 
         if idx >= self.len() as u32 {
             if count < MAX_MAP_IDX_SLOTS as u32 - 1 {
-                page.map[count as usize + 1]
-                    .idx_with_salt
-                    .store(u32::MAX, Ordering::Release);
-                page.map[count as usize + 1].wake_all();
+                page.map[count as usize + 1].store(u32::MAX, Ordering::Release);
+                self.wakers[count as usize + 1].wake_all();
             }
             return Poll::Ready(Err(ChanPageError::PageFull));
         }

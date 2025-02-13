@@ -105,7 +105,7 @@ impl DiskChan {
             };
 
             unsafe {
-                page.reset_all_waiters();
+                // page.reset_all_waiters();
                 page.reset_read_count_groups();
             }
 
