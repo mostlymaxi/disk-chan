@@ -7,16 +7,28 @@ async fn seq() {
 
     tracing_subscriber::fmt::init();
 
-    let mut tx = new("/tmp/disk-chan-test/seq", 2_u32.pow(24), usize::MAX)
+    let mut tx = new("/tmp/disk-chan-test/seq", 2_u32.pow(23), usize::MAX)
         .await
         .unwrap();
     let mut rx = tx.subscribe(0).await.unwrap();
 
-    let now = std::time::SystemTime::now();
+    let now_1 = std::time::SystemTime::now();
 
     for _ in 0..MESSAGE_COUNT {
         tx.send(MESSAGE).await.unwrap();
     }
+
+    let elapsed = now_1.elapsed().unwrap();
+
+    eprintln!(
+        "sent {} bytes over {} ms for a total of {:.2} MB/s. {} ns per iter",
+        MESSAGE.bytes().len() * MESSAGE_COUNT,
+        elapsed.as_millis(),
+        MESSAGE.bytes().len() as f64 * (MESSAGE_COUNT as f64 / elapsed.as_micros() as f64),
+        elapsed.as_nanos() / MESSAGE_COUNT as u128,
+    );
+
+    let now_2 = std::time::SystemTime::now();
 
     for _ in 0..MESSAGE_COUNT {
         loop {
@@ -30,6 +42,24 @@ async fn seq() {
         }
     }
 
-    eprintln!("{:#?}", now.elapsed());
+    let elapsed = now_2.elapsed().unwrap();
+    let elapsed_total = now_1.elapsed().unwrap();
+
+    eprintln!(
+        "received {} bytes over {} ms for a total of {:.2} MB/s. {} ns per iter",
+        MESSAGE.bytes().len() * MESSAGE_COUNT,
+        elapsed.as_millis(),
+        MESSAGE.bytes().len() as f64 * (MESSAGE_COUNT as f64 / elapsed.as_micros() as f64),
+        elapsed.as_nanos() / MESSAGE_COUNT as u128,
+    );
+
+    eprintln!(
+        "sent + received {} bytes over {} ms for a total of {:.2} MB/s. {} ns per iter",
+        MESSAGE.bytes().len() * MESSAGE_COUNT,
+        elapsed_total.as_millis(),
+        MESSAGE.bytes().len() as f64 * (MESSAGE_COUNT as f64 / elapsed_total.as_micros() as f64),
+        elapsed_total.as_nanos() / MESSAGE_COUNT as u128,
+    );
+
     let _ = std::fs::remove_dir_all("/tmp/disk-chan-test/seq");
 }

@@ -2,13 +2,17 @@ use std::{
     cell::UnsafeCell,
     marker::PhantomData,
     path::Path,
-    sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
-use futures::{future::poll_fn, task::AtomicWaker};
+use futures::future::poll_fn;
 use memmap2::MmapMut;
 use tokio::fs::File;
+use wake_queue::WakerQueue;
 
 use crate::atomic_union::AtomicUnion;
 
@@ -16,41 +20,14 @@ pub(super) type MapUsize = u16;
 pub(super) type IdxUsize = u32;
 pub(super) type CountUsize = u32;
 
-const MAX_WAITING_GROUPS: usize = 16;
+const MAX_WAITING_GROUPS: usize = u8::MAX as usize;
 const MAX_MAP_IDX_SLOTS: usize = MapUsize::MAX as usize;
 const SALT: u32 = 1;
 
-struct WakerQueue {
-    waiting_count: AtomicU8,
-    waiters: Box<[AtomicWaker]>,
-}
-
-impl Clone for WakerQueue {
-    fn clone(&self) -> Self {
-        WakerQueue {
-            waiting_count: AtomicU8::new(0),
-            waiters: Box::new([const { AtomicWaker::new() }; MAX_WAITING_GROUPS]),
-        }
-    }
-}
-
-impl WakerQueue {
-    fn new() -> Self {
-        WakerQueue {
-            waiting_count: AtomicU8::new(0),
-            waiters: Box::new([const { AtomicWaker::new() }; MAX_WAITING_GROUPS]),
-        }
-    }
-
-    fn wake_all(&self) {
-        let waiting_count = self.waiting_count.swap(0, Ordering::Relaxed);
-        if waiting_count > 0 {
-            self.waiters[..waiting_count as usize]
-                .iter()
-                .for_each(|w| w.wake());
-        }
-    }
-}
+// maybe each reader has an atomic union mapped
+// with CurrentPage | ReadCount
+//
+// if PageFull:
 
 pub(super) struct ChanPagePersist<Data: ?Sized = [u8]> {
     write_idx_count: AtomicUnion,
@@ -70,7 +47,7 @@ impl std::fmt::Debug for ChanPagePersist {
 
 pub(crate) struct ChanPage {
     inner: UnsafeCell<MmapMut>,
-    wakers: Box<[WakerQueue]>,
+    wakers: Arc<[WakerQueue]>,
     _phantom: PhantomData<ChanPagePersist>,
 }
 
@@ -90,13 +67,6 @@ pub enum ChanPageError {
 }
 
 impl ChanPage {
-    //pub(super) unsafe fn reset_all_waiters(&mut self) {
-    //    for slot in self.get_inner_mut().map.iter_mut() {
-    //        slot.waiting_count.store(0, Ordering::SeqCst);
-    //        // slot.waiters.fill_with(AtomicWaker::new);
-    //    }
-    //}
-
     pub(super) unsafe fn reset_read_count_groups(&mut self) {
         for group in &mut self.get_inner_mut().read_count_groups {
             let strong_read_count = group.load_high(Ordering::SeqCst);
@@ -131,10 +101,10 @@ impl ChanPage {
         path: P,
         len: IdxUsize,
     ) -> Result<Self, std::io::Error> {
-        let size: u64 = size_of::<ChanPagePersist<[u8; 0]>>()
+        let offset: u64 = size_of::<ChanPagePersist<[u8; 0]>>()
             .try_into()
             .expect("to be optimized out");
-        let size: u64 = len as u64 + size;
+        let size: u64 = len as u64 + offset;
 
         let f = File::options()
             .create(true)
@@ -147,11 +117,20 @@ impl ChanPage {
         f.set_len(size).await?;
 
         let raw = unsafe { memmap2::MmapMut::map_mut(&f)? };
+
+        // my benchmarks showed this does basically nothing so idk
+        //let _ = raw.advise_range(
+        //    memmap2::Advice::Sequential,
+        //    8 + 8 * MAX_WAITING_GROUPS,
+        //    4 * MAX_MAP_IDX_SLOTS,
+        //);
+        //let _ = raw.advise_range(memmap2::Advice::Sequential, offset as usize, len as usize);
+        //
         let raw = UnsafeCell::new(raw);
 
         Ok(ChanPage {
             inner: raw,
-            wakers: vec![WakerQueue::new(); MAX_MAP_IDX_SLOTS].into_boxed_slice(),
+            wakers: Arc::new([const { WakerQueue::new() }; MAX_MAP_IDX_SLOTS]),
             _phantom: PhantomData,
         })
     }
@@ -222,11 +201,11 @@ impl ChanPage {
 
         let idx = match idx {
             _ if idx < SALT => {
-                let wait_idx = self.wakers[count as usize]
-                    .waiting_count
-                    .fetch_add(1, Ordering::Relaxed);
+                // let wait_idx = self.wakers[count as usize]
+                //.waiting_count
+                //.fetch_add(1, Ordering::Relaxed);
 
-                self.wakers[count as usize].waiters[wait_idx as usize].register(cx.waker());
+                self.wakers[count as usize].register(cx.waker().clone());
 
                 // second check to make sure that a writer didn't finish while we were registering
                 let idx = page.map[count as usize].load(Ordering::Acquire);
