@@ -127,10 +127,14 @@ impl ChanPage {
         //let _ = raw.advise_range(memmap2::Advice::Sequential, offset as usize, len as usize);
         //
         let raw = UnsafeCell::new(raw);
+        let wakers = Vec::from_iter(
+            std::iter::repeat_with(const { WakerQueue::default }).take(MAX_MAP_IDX_SLOTS),
+        )
+        .into();
 
         Ok(ChanPage {
             inner: raw,
-            wakers: Arc::new([const { WakerQueue::new() }; MAX_MAP_IDX_SLOTS]),
+            wakers,
             _phantom: PhantomData,
         })
     }

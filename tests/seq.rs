@@ -10,6 +10,7 @@ async fn seq() {
     let mut tx = new("/tmp/disk-chan-test/seq", 2_u32.pow(23), usize::MAX)
         .await
         .unwrap();
+
     let mut rx = tx.subscribe(0).await.unwrap();
 
     let now_1 = std::time::SystemTime::now();
